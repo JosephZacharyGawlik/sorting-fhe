@@ -1,0 +1,12 @@
+# Ignore the entire build directory
+build/
+
+# Ignore any potential IDE settings
+.vscode/
+.idea/
+
+# Ignore any compiled binaries that might accidentally end up in the root
+*.o
+*.out
+sort8
+sort_demo
