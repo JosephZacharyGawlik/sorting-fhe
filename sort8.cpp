@@ -11,7 +11,7 @@ int main() {
     // 1. SETUP PARAMETERS
     uint32_t n = 8;
     // Increased depth to avoid the "DropLastElement" error
-    uint32_t multDepth = 40; 
+    uint32_t multDepth = 50; 
     uint32_t scaleModSize = 50;
     uint32_t batchSize = 8; 
 
@@ -35,13 +35,11 @@ int main() {
     double keyGenTime = TOC(t);
 
     // 3. ENCRYPTION
-    vector<double> input;
+    // Manually setting the 10, 20, ..., 80 values
+    vector<double> input = {10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0};
+    
     cout << "Unsorted Data: ";
-    for(int i=0; i < (int)n; i++) {
-        double val = (std::rand() % 50) + 10.0;
-        input.push_back(val);
-        cout << val << " ";
-    }
+    for(double v : input) cout << v << " ";
     cout << endl;
 
     Plaintext pt = cc->MakeCKKSPackedPlaintext(input);
@@ -68,7 +66,7 @@ int main() {
             auto diff = cc->EvalSub(ct, ctRotated);
             auto compareMask = cc->EvalChebyshevFunction([](double x) -> double {
                 return x > 0 ? 1.0 : 0.0;
-            }, diff, -100.0, 100.0, 5); 
+            }, diff, -100.0, 100.0, 13); 
 
             auto maxVal = cc->EvalAdd(cc->EvalMult(compareMask, ct), cc->EvalMult(cc->EvalSub(1.0, compareMask), ctRotated));
             auto minVal = cc->EvalAdd(cc->EvalMult(compareMask, ctRotated), cc->EvalMult(cc->EvalSub(1.0, compareMask), ct));
