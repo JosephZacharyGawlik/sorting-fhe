@@ -2,6 +2,9 @@
 #include <iostream>
 #include <vector>
 #include <chrono>
+#include <fstream>
+#include <ctime>
+#include <iomanip>
 
 using namespace std;
 using namespace seal;
@@ -116,6 +119,15 @@ void rank_based_sort(Ciphertext &ct,
 /*******************************************
  * MAIN
  *******************************************/
+std::string sort_type_to_string(SortType type) {
+    switch (type) {
+        case SortType::Bitonic:   return "Bitonic";
+        case SortType::Batcher:   return "Batcher";
+        case SortType::RankBased: return "RankBased";
+    }
+    return "Unknown";
+}
+
 int main()
 {
     /*********************
@@ -174,8 +186,9 @@ int main()
     /*********************
      * SELECT SORT TYPE
      *********************/
-    SortType sort_type = SortType::Bitonic;
+    SortType sort_type = SortType::RankBased;
     // Change here:
+    // SortType::Bitonic
     // SortType::Batcher
     // SortType::RankBased
 
@@ -201,12 +214,38 @@ int main()
     auto runtime =
         chrono::duration_cast<chrono::milliseconds>(end - start).count();
 
-    cout << "Runtime (ms): " << runtime << endl;
-    cout << "Rotations: " << rotation_count << endl;
-    cout << "Multiplications: " << multiplication_count << endl;
-    cout << "Noise budget: "
-         << decryptor.invariant_noise_budget(ct)
-         << " bits" << endl;
+    long noise_budget = decryptor.invariant_noise_budget(ct);
+
+    // Get current time
+    std::time_t now = std::time(nullptr);
+    std::tm *local_time = std::localtime(&now);
+
+    std::ostringstream timestamp;
+    timestamp << std::put_time(local_time, "%Y-%m-%d %H:%M:%S");
+
+    // Open CSV in append mode
+    std::ofstream csv("benchmark_results.csv", std::ios::app);
+
+    // If file is empty, write header
+    csv.seekp(0, std::ios::end);
+    if (csv.tellp() == 0) {
+        csv << "timestamp,algorithm,n,runtime_ms,rotations,multiplications,noise_budget_bits\n";
+    }
+
+    // Write row
+    csv << timestamp.str() << ","
+        << sort_type_to_string(sort_type) << ","
+        << n << ","
+        << runtime << ","
+        << rotation_count << ","
+        << multiplication_count << ","
+        << noise_budget
+        << "\n";
+
+    csv.close();
+
+    // Still print to console
+    cout << "Logged run to benchmark_results.csv" << endl;
 
     /*********************
      * DECRYPT
