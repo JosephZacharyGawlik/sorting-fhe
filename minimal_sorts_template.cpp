@@ -327,14 +327,19 @@ int main() {
      * BFV PARAMETER SETUP
      *********************/
     cout << "\n[1] Setting up BFV parameters..." << endl;
-    cout << "    poly_modulus_degree = 32768" << endl;
+    cout << "    poly_modulus_degree = 65536" << endl;
     cout << "    plain_modulus = 257" << endl;
 
-    size_t poly_modulus_degree = 32768;
+    size_t poly_modulus_degree = 65536;
 
     EncryptionParameters parms(scheme_type::bfv);
     parms.set_poly_modulus_degree(poly_modulus_degree);
-    parms.set_coeff_modulus(CoeffModulus::BFVDefault(poly_modulus_degree));
+    // BFVDefault doesn't cover 65536; manually create coeff_modulus.
+    // 29 primes x 60 bits = 1740 bits (max for tc128 at N=65536 is 1792)
+    parms.set_coeff_modulus(CoeffModulus::Create(poly_modulus_degree,
+        {60, 60, 60, 60, 60, 60, 60, 60, 60, 60,
+         60, 60, 60, 60, 60, 60, 60, 60, 60, 60,
+         60, 60, 60, 60, 60, 60, 60, 60, 60}));
     parms.set_plain_modulus(PLAIN_MOD);
 
     SEALContext context(parms);
