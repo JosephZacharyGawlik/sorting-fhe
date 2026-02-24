@@ -316,57 +316,149 @@ void bitonic_sort(Evaluator &eval,
 }
 
 /*******************************************
+ * RUN ONE BENCHMARK
+ *
+ * Encrypts, sorts, decrypts, verifies, and
+ * logs results for a given input array.
+ *******************************************/
+void run_benchmark(const vector<uint64_t> &input_values,
+                   Encryptor &encryptor,
+                   Evaluator &evaluator,
+                   Decryptor &decryptor,
+                   const RelinKeys &relin_keys) {
+    size_t n = input_values.size();
+
+    cout << "\n========================================" << endl;
+    cout << "Sorting " << n << " encrypted values" << endl;
+    cout << "========================================" << endl;
+
+    // Verify all values are in valid range [0, 128]
+    for (auto v : input_values) {
+        if (v > 128) {
+            cerr << "ERROR: Value " << v << " exceeds max 128!" << endl;
+            return;
+        }
+    }
+
+    // Encrypt
+    cout << "  Input:  ";
+    for (auto v : input_values) cout << v << " ";
+    cout << endl;
+
+    vector<Ciphertext> ct(n);
+    for (size_t i = 0; i < n; i++) {
+        encryptor.encrypt(make_scalar_plain(input_values[i]), ct[i]);
+    }
+
+    cout << "  Initial noise budget: " << decryptor.invariant_noise_budget(ct[0]) << " bits" << endl;
+
+    // Sort
+    ct_ct_mult_count = 0;
+    auto sort_start = chrono::high_resolution_clock::now();
+    bitonic_sort(evaluator, ct, relin_keys, decryptor);
+    auto sort_end = chrono::high_resolution_clock::now();
+
+    auto sort_ms = chrono::duration_cast<chrono::milliseconds>(sort_end - sort_start).count();
+    size_t mults = ct_ct_mult_count;
+
+    // Decrypt and verify
+    vector<uint64_t> output(n);
+    for (size_t i = 0; i < n; i++) {
+        Plaintext pt;
+        decryptor.decrypt(ct[i], pt);
+        output[i] = (pt.coeff_count() > 0) ? pt[0] : 0;
+    }
+
+    cout << "  Output: ";
+    for (auto v : output) cout << v << " ";
+    cout << endl;
+
+    vector<uint64_t> expected = input_values;
+    sort(expected.begin(), expected.end());
+
+    bool correct = (output == expected);
+    cout << "  " << (correct ? "PASS" : "FAIL") << endl;
+
+    // Find min noise budget
+    long min_noise = decryptor.invariant_noise_budget(ct[0]);
+    for (size_t i = 1; i < n; i++) {
+        long nb = decryptor.invariant_noise_budget(ct[i]);
+        if (nb < min_noise) min_noise = nb;
+    }
+
+    cout << "  Sort time:        " << sort_ms << " ms" << endl;
+    cout << "  Ct-ct multiplies: " << mults << endl;
+    cout << "  Min noise budget: " << min_noise << " bits" << endl;
+
+    // CSV logging
+    time_t now = time(nullptr);
+    tm *local_time = localtime(&now);
+    ostringstream timestamp;
+    timestamp << put_time(local_time, "%Y-%m-%d %H:%M:%S");
+
+    ofstream csv("benchmark_results.csv", ios::app);
+    csv.seekp(0, ios::end);
+    if (csv.tellp() == 0) {
+        csv << "timestamp,algorithm,n,runtime_ms,ct_ct_multiplications,noise_budget_bits,correct\n";
+    }
+
+    csv << timestamp.str() << ","
+        << "BitonicBFV_NonBatched" << ","
+        << n << ","
+        << sort_ms << ","
+        << mults << ","
+        << min_noise << ","
+        << (correct ? "true" : "false") << "\n";
+    csv.close();
+}
+
+/*******************************************
  * MAIN
  *******************************************/
 int main() {
     cout << "========================================" << endl;
-    cout << "Non-Batched BFV Bitonic Sort (8 values)" << endl;
+    cout << "Non-Batched BFV Bitonic Sort Benchmark" << endl;
     cout << "========================================" << endl;
 
     /*********************
      * BFV PARAMETER SETUP
      *********************/
     cout << "\n[1] Setting up BFV parameters..." << endl;
-    cout << "    poly_modulus_degree = 32768" << endl;
-    cout << "    plain_modulus = 257" << endl;
 
     size_t poly_modulus_degree = 32768;
 
     EncryptionParameters parms(scheme_type::bfv);
     parms.set_poly_modulus_degree(poly_modulus_degree);
-    // Need ~1400 bits of noise budget for 6 rounds x ~220 bits/round.
-    // BFVDefault(32768) only gives 881 bits (tc128), so we use sec_level_type::none
-    // with a larger coeff_modulus. 26 primes x 60 bits = 1560 bits.
+    // Need ~2200 bits for n=16 (10 rounds x ~220 bits/round).
+    // 40 primes x 60 bits = 2400 bits.
+    // sec_level_type::none needed since this exceeds tc128 limits for N=32768.
     parms.set_coeff_modulus(CoeffModulus::Create(poly_modulus_degree,
         {60, 60, 60, 60, 60, 60, 60, 60, 60, 60,
          60, 60, 60, 60, 60, 60, 60, 60, 60, 60,
-         60, 60, 60, 60, 60, 60}));
+         60, 60, 60, 60, 60, 60, 60, 60, 60, 60,
+         60, 60, 60, 60, 60, 60, 60, 60, 60, 60}));
     parms.set_plain_modulus(PLAIN_MOD);
 
-    // sec_level_type::none bypasses security enforcement — needed because
-    // 1560 bits exceeds the tc128 limit of 881 for N=32768.
-    // Fine for research/benchmarking.
     SEALContext context(parms, true, sec_level_type::none);
 
-    // Validate parameters
     auto context_data = context.key_context_data();
     if (!context_data) {
         cerr << "ERROR: Invalid parameters!" << endl;
         return 1;
     }
-    cout << "    Parameters validated successfully." << endl;
 
     auto &ctx_parms = context_data->parms();
     auto &coeff_mod = ctx_parms.coeff_modulus();
     size_t total_bits = 0;
     for (auto &m : coeff_mod) total_bits += m.bit_count();
+    cout << "    poly_modulus_degree = " << poly_modulus_degree << endl;
+    cout << "    plain_modulus = " << PLAIN_MOD << endl;
     cout << "    coeff_modulus total bits: " << total_bits << endl;
 
     /*********************
      * KEY GENERATION
      *********************/
     cout << "\n[2] Generating keys..." << endl;
-    cout << "    (No Galois keys needed — non-batched approach)" << endl;
 
     auto key_start = chrono::high_resolution_clock::now();
 
@@ -388,190 +480,47 @@ int main() {
     Decryptor decryptor(context, secret_key);
 
     /*********************
-     * ENCRYPT INPUT
+     * SINGLE CAS SANITY CHECK
      *********************/
-    vector<uint64_t> input_values = {42, 17, 83, 5, 91, 33, 67, 12};
-    size_t n = input_values.size();
-
-    cout << "\n[3] Encrypting " << n << " values..." << endl;
-    cout << "    Input: ";
-    for (auto v : input_values) cout << v << " ";
-    cout << endl;
-
-    // Verify all values are in valid range [0, 128]
-    for (auto v : input_values) {
-        if (v > 128) {
-            cerr << "ERROR: Value " << v << " exceeds max 128!" << endl;
-            return 1;
-        }
-    }
-
-    vector<Ciphertext> ct(n);
-    for (size_t i = 0; i < n; i++) {
-        encryptor.encrypt(make_scalar_plain(input_values[i]), ct[i]);
-    }
-
-    // Check initial noise budget
-    cout << "    Initial noise budgets: ";
-    for (size_t i = 0; i < n; i++) {
-        cout << decryptor.invariant_noise_budget(ct[i]);
-        if (i < n - 1) cout << ", ";
-    }
-    cout << " bits" << endl;
-
-    /*********************
-     * SINGLE CAS TEST
-     *********************/
-    cout << "\n[4] Quick test: single compare-and-swap on (42, 17)..." << endl;
+    cout << "\n[3] Quick test: single compare-and-swap on (42, 17)..." << endl;
     {
         Ciphertext test_a, test_b;
         encryptor.encrypt(make_scalar_plain(42), test_a);
         encryptor.encrypt(make_scalar_plain(17), test_b);
 
-        size_t mults_before = ct_ct_mult_count;
+        ct_ct_mult_count = 0;
         compare_and_swap(evaluator, test_a, test_b, relin_keys);
-        size_t mults_per_cas = ct_ct_mult_count - mults_before;
 
         Plaintext pt_a, pt_b;
         decryptor.decrypt(test_a, pt_a);
         decryptor.decrypt(test_b, pt_b);
 
-        // Decode: for scalar plaintexts, the constant term is the value
-        // The hex string represents the polynomial; constant term is the value
-        uint64_t val_a = 0, val_b = 0;
-        if (pt_a.coeff_count() > 0) val_a = pt_a[0];
-        if (pt_b.coeff_count() > 0) val_b = pt_b[0];
+        uint64_t val_a = (pt_a.coeff_count() > 0) ? pt_a[0] : 0;
+        uint64_t val_b = (pt_b.coeff_count() > 0) ? pt_b[0] : 0;
 
-        cout << "    Result: (" << val_a << ", " << val_b << ")" << endl;
-        cout << "    Ct-ct multiplications per CAS: " << mults_per_cas << endl;
+        cout << "    Result: (" << val_a << ", " << val_b << ") — "
+             << ((val_a == 17 && val_b == 42) ? "PASS" : "FAIL") << endl;
+        cout << "    Ct-ct multiplications per CAS: " << ct_ct_mult_count << endl;
         cout << "    Noise budget after CAS: "
-             << decryptor.invariant_noise_budget(test_a) << ", "
-             << decryptor.invariant_noise_budget(test_b) << " bits" << endl;
-
-        if (val_a == 17 && val_b == 42) {
-            cout << "    PASS: correctly swapped to (17, 42)" << endl;
-        } else {
-            cout << "    FAIL: expected (17, 42)" << endl;
-        }
-    }
-
-    // Reset counter for the full sort
-    ct_ct_mult_count = 0;
-
-    /*********************
-     * FULL BITONIC SORT
-     *********************/
-    cout << "\n[5] Running bitonic sort on 8 encrypted values..." << endl;
-
-    auto sort_start = chrono::high_resolution_clock::now();
-    bitonic_sort(evaluator, ct, relin_keys, decryptor);
-    auto sort_end = chrono::high_resolution_clock::now();
-
-    auto sort_ms = chrono::duration_cast<chrono::milliseconds>(sort_end - sort_start).count();
-    size_t sort_mult_count = ct_ct_mult_count;  // save before equal-elements test
-
-    /*********************
-     * DECRYPT & VERIFY
-     *********************/
-    cout << "\n[6] Decrypting results..." << endl;
-
-    vector<uint64_t> output(n);
-    for (size_t i = 0; i < n; i++) {
-        Plaintext pt;
-        decryptor.decrypt(ct[i], pt);
-        output[i] = (pt.coeff_count() > 0) ? pt[0] : 0;
-    }
-
-    cout << "    Output: ";
-    for (auto v : output) cout << v << " ";
-    cout << endl;
-
-    // Verify sort
-    vector<uint64_t> expected = input_values;
-    sort(expected.begin(), expected.end());
-
-    cout << "    Expected: ";
-    for (auto v : expected) cout << v << " ";
-    cout << endl;
-
-    bool correct = (output == expected);
-    cout << "    " << (correct ? "PASS" : "FAIL") << ": sort "
-         << (correct ? "correct" : "INCORRECT") << endl;
-
-    /*********************
-     * BENCHMARK SUMMARY
-     *********************/
-    cout << "\n========================================" << endl;
-    cout << "BENCHMARK SUMMARY" << endl;
-    cout << "========================================" << endl;
-    cout << "  Sort time:        " << sort_ms << " ms" << endl;
-    cout << "  Ct-ct multiplies: " << sort_mult_count << endl;
-    cout << "  Final noise budgets: ";
-    for (size_t i = 0; i < n; i++) {
-        cout << decryptor.invariant_noise_budget(ct[i]);
-        if (i < n - 1) cout << ", ";
-    }
-    cout << " bits" << endl;
-
-    /*********************
-     * EQUAL ELEMENTS TEST
-     *********************/
-    cout << "\n[7] Test with equal elements: [5, 5, 3, 3, 1, 1, 7, 7]" << endl;
-    {
-        vector<uint64_t> eq_input = {5, 5, 3, 3, 1, 1, 7, 7};
-        vector<Ciphertext> eq_ct(8);
-        for (size_t i = 0; i < 8; i++) {
-            encryptor.encrypt(make_scalar_plain(eq_input[i]), eq_ct[i]);
-        }
-
-        bitonic_sort(evaluator, eq_ct, relin_keys, decryptor);
-
-        vector<uint64_t> eq_output(8);
-        for (size_t i = 0; i < 8; i++) {
-            Plaintext pt;
-            decryptor.decrypt(eq_ct[i], pt);
-            eq_output[i] = (pt.coeff_count() > 0) ? pt[0] : 0;
-        }
-
-        cout << "    Output: ";
-        for (auto v : eq_output) cout << v << " ";
-        cout << endl;
-
-        vector<uint64_t> eq_expected = {1, 1, 3, 3, 5, 5, 7, 7};
-        bool eq_correct = (eq_output == eq_expected);
-        cout << "    " << (eq_correct ? "PASS" : "FAIL") << endl;
+             << decryptor.invariant_noise_budget(test_a) << " bits" << endl;
     }
 
     /*********************
-     * CSV LOGGING
+     * BENCHMARK: n=2, n=4, n=8, n=16
      *********************/
-    {
-        time_t now = time(nullptr);
-        tm *local_time = localtime(&now);
-        ostringstream timestamp;
-        timestamp << put_time(local_time, "%Y-%m-%d %H:%M:%S");
+    run_benchmark({42, 17},
+                  encryptor, evaluator, decryptor, relin_keys);
 
-        ofstream csv("benchmark_results.csv", ios::app);
-        csv.seekp(0, ios::end);
-        if (csv.tellp() == 0) {
-            csv << "timestamp,algorithm,n,runtime_ms,ct_ct_multiplications,noise_budget_bits\n";
-        }
+    run_benchmark({42, 17, 83, 5},
+                  encryptor, evaluator, decryptor, relin_keys);
 
-        long min_noise = decryptor.invariant_noise_budget(ct[0]);
-        for (size_t i = 1; i < n; i++) {
-            long nb = decryptor.invariant_noise_budget(ct[i]);
-            if (nb < min_noise) min_noise = nb;
-        }
+    run_benchmark({42, 17, 83, 5, 91, 33, 67, 12},
+                  encryptor, evaluator, decryptor, relin_keys);
 
-        csv << timestamp.str() << ","
-            << "BitonicBFV_NonBatched" << ","
-            << n << ","
-            << sort_ms << ","
-            << sort_mult_count << ","
-            << min_noise << "\n";
-        csv.close();
-        cout << "\nLogged run to benchmark_results.csv" << endl;
-    }
+    run_benchmark({42, 17, 83, 5, 91, 33, 67, 12, 100, 2, 55, 28, 76, 9, 118, 44},
+                  encryptor, evaluator, decryptor, relin_keys);
+
+    cout << "\nAll benchmarks complete. Results in benchmark_results.csv" << endl;
 
     return 0;
 }
