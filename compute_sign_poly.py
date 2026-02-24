@@ -196,6 +196,51 @@ def verify_correction_polynomial(Q_coeffs):
     return errors == 0
 
 
+def verify_flag_polynomial(Q_coeffs):
+    """
+    Verify flag(x) = 129 * (x * Q(x^2) + 1):
+      flag(x) = 1 for x in {1,...,128}
+      flag(x) = 0 for x in {129,...,256}
+      flag(0) = 129 (known limitation — rank-based sort only uses distinct values,
+                      so differences are never 0)
+    """
+    INV2 = 129  # inverse of 2 mod 257
+    errors = 0
+
+    for x in range(P):
+        y = (x * x) % P
+        q_val = eval_poly(Q_coeffs, y, P)
+        # x * Q(x^2)
+        sign_val = (x * q_val) % P
+        # x * Q(x^2) + 1
+        inner = (sign_val + 1) % P
+        # 129 * (...)
+        flag = (INV2 * inner) % P
+
+        if x == 0:
+            # Known: sign(0) = 0, so flag(0) = 129*(0+1) = 129, not 0.
+            # This is fine because rank-based sort only operates on distinct
+            # values, so pairwise differences are never 0.
+            if flag != 129:
+                print(f"  UNEXPECTED at x=0: flag={flag}, expected=129")
+                errors += 1
+        elif 1 <= x <= 128:
+            if flag != 1:
+                print(f"  MISMATCH at x={x}: flag={flag}, expected=1")
+                errors += 1
+        else:
+            if flag != 0:
+                print(f"  MISMATCH at x={x}: flag={flag}, expected=0")
+                errors += 1
+
+    if errors == 0:
+        print("PASS: flag polynomial verified (flag(0)=129 as expected for distinct-only use)")
+    else:
+        print(f"FAIL: {errors} mismatches")
+
+    return errors == 0
+
+
 def simulate_bitonic_sort():
     """Simulate bitonic sort on plaintext to verify the network."""
     arr = [42, 17, 83, 5, 91, 33, 67, 12]
@@ -276,10 +321,14 @@ def main():
     print("\nStep 3: Verifying correction polynomial R(x) = 129*(x + x^2*Q(x^2))...")
     ok2 = verify_correction_polynomial(Q_coeffs)
 
-    # Step 4: Simulate bitonic sort
+    # Step 4: Verify flag polynomial
+    print("\nStep 4: Verifying flag polynomial flag(x) = 129*(x*Q(x^2)+1)...")
+    ok4 = verify_flag_polynomial(Q_coeffs)
+
+    # Step 5: Simulate bitonic sort
     ok3 = simulate_bitonic_sort()
 
-    # Step 5: Output C++ array
+    # Step 6: Output C++ array
     print("\n" + "=" * 60)
     print("C++ array literal:")
     print("=" * 60)
@@ -293,7 +342,7 @@ def main():
     print(f"  Baby powers needed: y^0 through y^7")
     print(f"  Giant power: z = y^8")
 
-    if ok1 and ok2 and ok3:
+    if ok1 and ok2 and ok3 and ok4:
         print("\nAll checks PASSED.")
     else:
         print("\nSome checks FAILED!")

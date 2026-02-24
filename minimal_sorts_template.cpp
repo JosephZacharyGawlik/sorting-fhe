@@ -81,14 +81,18 @@ void ct_square(Evaluator &eval, const Ciphertext &a,
 /*******************************************
  * PATERSON-STOCKMEYER EVALUATION
  *
- * Evaluates Q(y) where y = diff^2,
- * then assembles correction = 129 * (diff + y * Q(y))
+ * Shared helper: evaluates Q(y) where y = diff^2
+ * using Paterson-Stockmeyer with baby step s=8.
+ *
+ * Returns {T, y} where T = Q(y) and y = diff^2.
+ * Both eval_correction_poly and eval_flag_poly
+ * call this, then apply their own Phase 4.
  *
  * Q has 128 coefficients, baby step s=8, 16 giant groups.
  *******************************************/
-Ciphertext eval_correction_poly(Evaluator &eval,
-                                const Ciphertext &diff,
-                                const RelinKeys &rlk) {
+pair<Ciphertext, Ciphertext> eval_Q_of_y(Evaluator &eval,
+                                          const Ciphertext &diff,
+                                          const RelinKeys &rlk) {
     //--- Phase 1: Baby powers of y = diff^2 ---
     // We need y^0 (implicit), y^1, ..., y^7, and z = y^8
     Ciphertext y;  // y = diff^2
@@ -234,10 +238,21 @@ Ciphertext eval_correction_poly(Evaluator &eval,
     eval.add_inplace(T, S[0]);
 
     // T now holds Q(y)
+    return {T, y};
+}
 
-    //--- Phase 4: Assembly ---
-    // correction = 129 * (diff + y * Q(y))
-    // = 129 * (diff + diff^2 * Q(diff^2))
+/*******************************************
+ * CORRECTION POLYNOMIAL
+ *
+ * correction = 129 * (diff + y * Q(y))
+ * Returns diff if diff ∈ {1,...,128}, 0 otherwise
+ *******************************************/
+Ciphertext eval_correction_poly(Evaluator &eval,
+                                const Ciphertext &diff,
+                                const RelinKeys &rlk) {
+    auto [T, y] = eval_Q_of_y(eval, diff, rlk);
+
+    // Phase 4: correction = 129 * (diff + y * Q(y))
     Ciphertext yQ;
     ct_mult(eval, y, T, yQ, rlk);  // y * Q(y)
 
@@ -249,6 +264,61 @@ Ciphertext eval_correction_poly(Evaluator &eval,
     eval.multiply_plain(inner, make_scalar_plain(INV2), correction);
 
     return correction;
+}
+
+/*******************************************
+ * FLAG POLYNOMIAL
+ *
+ * flag = 129 * (diff * Q(y) + 1)
+ * Returns 1 if diff ∈ {1,...,128}, 0 otherwise
+ *
+ * Derivation: sign(x) = x * Q(x^2)
+ *   = 1 for x ∈ {1,...,128}
+ *   = -1 (=256) for x ∈ {129,...,256}
+ *   = 0 for x = 0
+ * flag = (sign + 1) / 2 = 129 * (sign + 1)
+ *      = 129 * (x * Q(x^2) + 1)
+ *******************************************/
+Ciphertext eval_flag_poly(Evaluator &eval,
+                          const Ciphertext &diff,
+                          const RelinKeys &rlk) {
+    auto [T, y] = eval_Q_of_y(eval, diff, rlk);
+
+    // Phase 4: flag = 129 * (diff * Q(y) + 1)
+    Ciphertext sign;
+    ct_mult(eval, diff, T, sign, rlk);  // diff * Q(y), depth 9
+
+    // sign + 1
+    eval.add_plain_inplace(sign, make_scalar_plain(1));
+
+    // Multiply by 129 (inv(2) mod 257)
+    Ciphertext flag;
+    eval.multiply_plain(sign, make_scalar_plain(INV2), flag);
+
+    return flag;
+}
+
+/*******************************************
+ * IS-ZERO INDICATOR
+ *
+ * Returns 1 if x encrypts 0, 0 otherwise.
+ * Uses Fermat's little theorem: x^256 ≡ 1 (mod 257)
+ * for x ≠ 0, so is_zero(x) = 1 - x^256.
+ * When x = 0: 0^256 = 0, so 1 - 0 = 1. ✓
+ * When x ≠ 0: x^256 = 1, so 1 - 1 = 0. ✓
+ *
+ * 8 ct-ct multiplications (squarings), depth 8 from input.
+ *******************************************/
+Ciphertext eval_is_zero(Evaluator &eval,
+                        const Ciphertext &x,
+                        const RelinKeys &rlk) {
+    Ciphertext pow = x;
+    for (int i = 0; i < 8; i++) {
+        ct_square(eval, pow, pow, rlk);  // x^2, x^4, ..., x^256
+    }
+    eval.negate_inplace(pow);            // -x^256
+    eval.add_plain_inplace(pow, make_scalar_plain(1));  // 1 - x^256
+    return pow;
 }
 
 /*******************************************
@@ -316,6 +386,130 @@ void bitonic_sort(Evaluator &eval,
 }
 
 /*******************************************
+ * RANK-BASED SORT
+ *
+ * Constant multiplicative depth (18) regardless
+ * of array size. Only works with distinct inputs.
+ *
+ * Phase 1: Pairwise comparison flags
+ *   flag_ij = 1 if ct[i] > ct[j], 0 otherwise
+ * Phase 2: Compute ranks
+ *   rank[i] = # elements smaller than ct[i]
+ * Phase 3: Place elements at sorted positions
+ *   output[k] = sum_i( ct[i] * is_zero(rank[i] - k) )
+ *******************************************/
+void rank_based_sort(Evaluator &eval,
+                     vector<Ciphertext> &ct,
+                     const RelinKeys &rlk,
+                     Decryptor &decryptor) {
+    size_t n = ct.size();
+
+    // --- Phase 1: Pairwise comparison flags ---
+    cout << "  Phase 1: Computing pairwise comparison flags..." << endl;
+
+    // flags[i][j] stores flag(ct[i] - ct[j]) for i < j
+    // flag_ij = 1 means ct[i] > ct[j]
+    vector<vector<Ciphertext>> flags(n, vector<Ciphertext>(n));
+
+    for (size_t i = 0; i < n; i++) {
+        for (size_t j = i + 1; j < n; j++) {
+            Ciphertext diff;
+            eval.sub(ct[i], ct[j], diff);
+            flags[i][j] = eval_flag_poly(eval, diff, rlk);
+        }
+    }
+
+    cout << "    Noise budget after Phase 1: "
+         << decryptor.invariant_noise_budget(flags[0][1]) << " bits" << endl;
+
+    // --- Phase 2: Compute ranks ---
+    // rank[i] = number of elements smaller than ct[i]
+    //         = sum_{j != i} flag(ct[i] - ct[j])
+    // For i < j: flag(ct[i] - ct[j]) = flags[i][j]       (contributes to rank[i])
+    //            flag(ct[j] - ct[i]) = 1 - flags[i][j]    (contributes to rank[j])
+    cout << "  Phase 2: Computing ranks..." << endl;
+
+    vector<Ciphertext> rank_ct(n);
+
+    for (size_t i = 0; i < n; i++) {
+        bool initialized = false;
+
+        for (size_t j = 0; j < n; j++) {
+            if (i == j) continue;
+
+            Ciphertext contribution;
+            if (i < j) {
+                // flag(ct[i] - ct[j]) = flags[i][j]
+                contribution = flags[i][j];
+            } else {
+                // flag(ct[i] - ct[j]) = 1 - flags[j][i]
+                contribution = flags[j][i];
+                eval.negate_inplace(contribution);
+                eval.add_plain_inplace(contribution, make_scalar_plain(1));
+            }
+
+            if (!initialized) {
+                rank_ct[i] = contribution;
+                initialized = true;
+            } else {
+                eval.add_inplace(rank_ct[i], contribution);
+            }
+        }
+    }
+
+    cout << "    Noise budget after Phase 2: "
+         << decryptor.invariant_noise_budget(rank_ct[0]) << " bits" << endl;
+
+    // --- Phase 3: Place elements at sorted positions ---
+    // output[k] = sum_i( ct[i] * is_zero(rank[i] - k) )
+    cout << "  Phase 3: Placing elements at sorted positions..." << endl;
+
+    vector<Ciphertext> output(n);
+
+    for (size_t k = 0; k < n; k++) {
+        bool initialized = false;
+
+        for (size_t i = 0; i < n; i++) {
+            // Compute rank[i] - k
+            Ciphertext rank_minus_k = rank_ct[i];
+            if (k > 0) {
+                eval.sub_plain(rank_ct[i], make_scalar_plain(k), rank_minus_k);
+            }
+
+            // is_zero(rank[i] - k)
+            Ciphertext indicator = eval_is_zero(eval, rank_minus_k, rlk);
+
+            // ct[i] * indicator
+            Ciphertext term;
+            ct_mult(eval, ct[i], indicator, term, rlk);
+
+            if (!initialized) {
+                output[k] = term;
+                initialized = true;
+            } else {
+                eval.add_inplace(output[k], term);
+            }
+        }
+
+        cout << "    Position " << k << " noise budget: "
+             << decryptor.invariant_noise_budget(output[k]) << " bits" << endl;
+    }
+
+    // Copy output back to ct[]
+    for (size_t i = 0; i < n; i++) {
+        ct[i] = output[i];
+    }
+}
+
+/*******************************************
+ * SORT ALGORITHM ENUM
+ *******************************************/
+enum class SortAlgorithm {
+    Bitonic,
+    RankBased
+};
+
+/*******************************************
  * RUN ONE BENCHMARK
  *
  * Encrypts, sorts, decrypts, verifies, and
@@ -325,11 +519,16 @@ void run_benchmark(const vector<uint64_t> &input_values,
                    Encryptor &encryptor,
                    Evaluator &evaluator,
                    Decryptor &decryptor,
-                   const RelinKeys &relin_keys) {
+                   const RelinKeys &relin_keys,
+                   SortAlgorithm algorithm = SortAlgorithm::Bitonic) {
     size_t n = input_values.size();
 
+    string algo_name = (algorithm == SortAlgorithm::Bitonic)
+                        ? "BitonicBFV_NonBatched"
+                        : "RankBFV_NonBatched";
+
     cout << "\n========================================" << endl;
-    cout << "Sorting " << n << " encrypted values" << endl;
+    cout << "Sorting " << n << " encrypted values (" << algo_name << ")" << endl;
     cout << "========================================" << endl;
 
     // Verify all values are in valid range [0, 128]
@@ -355,7 +554,11 @@ void run_benchmark(const vector<uint64_t> &input_values,
     // Sort
     ct_ct_mult_count = 0;
     auto sort_start = chrono::high_resolution_clock::now();
-    bitonic_sort(evaluator, ct, relin_keys, decryptor);
+    if (algorithm == SortAlgorithm::Bitonic) {
+        bitonic_sort(evaluator, ct, relin_keys, decryptor);
+    } else {
+        rank_based_sort(evaluator, ct, relin_keys, decryptor);
+    }
     auto sort_end = chrono::high_resolution_clock::now();
 
     auto sort_ms = chrono::duration_cast<chrono::milliseconds>(sort_end - sort_start).count();
@@ -403,7 +606,7 @@ void run_benchmark(const vector<uint64_t> &input_values,
     }
 
     csv << timestamp.str() << ","
-        << "BitonicBFV_NonBatched" << ","
+        << algo_name << ","
         << n << ","
         << sort_ms << ","
         << mults << ","
@@ -417,7 +620,7 @@ void run_benchmark(const vector<uint64_t> &input_values,
  *******************************************/
 int main() {
     cout << "========================================" << endl;
-    cout << "Non-Batched BFV Bitonic Sort Benchmark" << endl;
+    cout << "Non-Batched BFV Sort Benchmark" << endl;
     cout << "========================================" << endl;
 
     /*********************
@@ -506,19 +709,89 @@ int main() {
     }
 
     /*********************
-     * BENCHMARK: n=2, n=4, n=8, n=16
+     * FLAG POLYNOMIAL SANITY CHECK
      *********************/
-    run_benchmark({42, 17},
-                  encryptor, evaluator, decryptor, relin_keys);
+    cout << "\n[4] Quick test: flag polynomial..." << endl;
+    {
+        // flag(42 - 17) = flag(25) should be 1 (25 ∈ {1,...,128})
+        Ciphertext ct_42, ct_17;
+        encryptor.encrypt(make_scalar_plain(42), ct_42);
+        encryptor.encrypt(make_scalar_plain(17), ct_17);
 
+        Ciphertext diff_pos;
+        evaluator.sub(ct_42, ct_17, diff_pos);
+        ct_ct_mult_count = 0;
+        Ciphertext flag_pos = eval_flag_poly(evaluator, diff_pos, relin_keys);
+
+        Plaintext pt_flag;
+        decryptor.decrypt(flag_pos, pt_flag);
+        uint64_t flag_val = (pt_flag.coeff_count() > 0) ? pt_flag[0] : 0;
+        cout << "    flag(42-17) = " << flag_val << " — "
+             << ((flag_val == 1) ? "PASS" : "FAIL") << endl;
+        cout << "    Ct-ct multiplications: " << ct_ct_mult_count << endl;
+        cout << "    Noise budget: " << decryptor.invariant_noise_budget(flag_pos) << " bits" << endl;
+
+        // flag(17 - 42) = flag(232) should be 0 (232 ∈ {129,...,256})
+        Ciphertext diff_neg;
+        evaluator.sub(ct_17, ct_42, diff_neg);
+        Ciphertext flag_neg = eval_flag_poly(evaluator, diff_neg, relin_keys);
+
+        decryptor.decrypt(flag_neg, pt_flag);
+        flag_val = (pt_flag.coeff_count() > 0) ? pt_flag[0] : 0;
+        cout << "    flag(17-42) = " << flag_val << " — "
+             << ((flag_val == 0) ? "PASS" : "FAIL") << endl;
+    }
+
+    /*********************
+     * IS-ZERO SANITY CHECK
+     *********************/
+    cout << "\n[5] Quick test: is_zero indicator..." << endl;
+    {
+        // is_zero(0) should be 1
+        Ciphertext ct_zero;
+        encryptor.encrypt(make_scalar_plain(0), ct_zero);
+        ct_ct_mult_count = 0;
+        Ciphertext iz_zero = eval_is_zero(evaluator, ct_zero, relin_keys);
+
+        Plaintext pt_iz;
+        decryptor.decrypt(iz_zero, pt_iz);
+        uint64_t iz_val = (pt_iz.coeff_count() > 0) ? pt_iz[0] : 0;
+        cout << "    is_zero(0) = " << iz_val << " — "
+             << ((iz_val == 1) ? "PASS" : "FAIL") << endl;
+        cout << "    Ct-ct multiplications: " << ct_ct_mult_count << endl;
+        cout << "    Noise budget: " << decryptor.invariant_noise_budget(iz_zero) << " bits" << endl;
+
+        // is_zero(5) should be 0
+        Ciphertext ct_five;
+        encryptor.encrypt(make_scalar_plain(5), ct_five);
+        Ciphertext iz_five = eval_is_zero(evaluator, ct_five, relin_keys);
+
+        decryptor.decrypt(iz_five, pt_iz);
+        iz_val = (pt_iz.coeff_count() > 0) ? pt_iz[0] : 0;
+        cout << "    is_zero(5) = " << iz_val << " — "
+             << ((iz_val == 0) ? "PASS" : "FAIL") << endl;
+    }
+
+    /*********************
+     * BENCHMARK: Rank-based sort n=4
+     *********************/
     run_benchmark({42, 17, 83, 5},
-                  encryptor, evaluator, decryptor, relin_keys);
+                  encryptor, evaluator, decryptor, relin_keys,
+                  SortAlgorithm::RankBased);
 
-    run_benchmark({42, 17, 83, 5, 91, 33, 67, 12},
-                  encryptor, evaluator, decryptor, relin_keys);
-
-    run_benchmark({42, 17, 83, 5, 91, 33, 67, 12, 100, 2, 55, 28, 76, 9, 118, 44},
-                  encryptor, evaluator, decryptor, relin_keys);
+    // Bitonic sort benchmarks (commented out for now)
+    // run_benchmark({42, 17},
+    //               encryptor, evaluator, decryptor, relin_keys,
+    //               SortAlgorithm::Bitonic);
+    // run_benchmark({42, 17, 83, 5},
+    //               encryptor, evaluator, decryptor, relin_keys,
+    //               SortAlgorithm::Bitonic);
+    // run_benchmark({42, 17, 83, 5, 91, 33, 67, 12},
+    //               encryptor, evaluator, decryptor, relin_keys,
+    //               SortAlgorithm::Bitonic);
+    // run_benchmark({42, 17, 83, 5, 91, 33, 67, 12, 100, 2, 55, 28, 76, 9, 118, 44},
+    //               encryptor, evaluator, decryptor, relin_keys,
+    //               SortAlgorithm::Bitonic);
 
     cout << "\nAll benchmarks complete. Results in benchmark_results.csv" << endl;
 
