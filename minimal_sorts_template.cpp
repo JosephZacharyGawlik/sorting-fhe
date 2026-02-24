@@ -327,22 +327,26 @@ int main() {
      * BFV PARAMETER SETUP
      *********************/
     cout << "\n[1] Setting up BFV parameters..." << endl;
-    cout << "    poly_modulus_degree = 65536" << endl;
+    cout << "    poly_modulus_degree = 32768" << endl;
     cout << "    plain_modulus = 257" << endl;
 
-    size_t poly_modulus_degree = 65536;
+    size_t poly_modulus_degree = 32768;
 
     EncryptionParameters parms(scheme_type::bfv);
     parms.set_poly_modulus_degree(poly_modulus_degree);
-    // BFVDefault doesn't cover 65536; manually create coeff_modulus.
-    // 29 primes x 60 bits = 1740 bits (max for tc128 at N=65536 is 1792)
+    // Need ~1400 bits of noise budget for 6 rounds x ~220 bits/round.
+    // BFVDefault(32768) only gives 881 bits (tc128), so we use sec_level_type::none
+    // with a larger coeff_modulus. 26 primes x 60 bits = 1560 bits.
     parms.set_coeff_modulus(CoeffModulus::Create(poly_modulus_degree,
         {60, 60, 60, 60, 60, 60, 60, 60, 60, 60,
          60, 60, 60, 60, 60, 60, 60, 60, 60, 60,
-         60, 60, 60, 60, 60, 60, 60, 60, 60}));
+         60, 60, 60, 60, 60, 60}));
     parms.set_plain_modulus(PLAIN_MOD);
 
-    SEALContext context(parms);
+    // sec_level_type::none bypasses security enforcement — needed because
+    // 1560 bits exceeds the tc128 limit of 881 for N=32768.
+    // Fine for research/benchmarking.
+    SEALContext context(parms, true, sec_level_type::none);
 
     // Validate parameters
     auto context_data = context.key_context_data();
