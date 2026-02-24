@@ -1,0 +1,2 @@
+timestamp,algorithm,n,runtime_ms,ct_ct_multiplications,noise_budget_bits
+2026-02-24 19:23:44,BitonicBFV_NonBatched,8,869220,648,162

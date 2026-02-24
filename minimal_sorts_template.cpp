@@ -468,6 +468,7 @@ int main() {
     auto sort_end = chrono::high_resolution_clock::now();
 
     auto sort_ms = chrono::duration_cast<chrono::milliseconds>(sort_end - sort_start).count();
+    size_t sort_mult_count = ct_ct_mult_count;  // save before equal-elements test
 
     /*********************
      * DECRYPT & VERIFY
@@ -504,7 +505,7 @@ int main() {
     cout << "BENCHMARK SUMMARY" << endl;
     cout << "========================================" << endl;
     cout << "  Sort time:        " << sort_ms << " ms" << endl;
-    cout << "  Ct-ct multiplies: " << ct_ct_mult_count << endl;
+    cout << "  Ct-ct multiplies: " << sort_mult_count << endl;
     cout << "  Final noise budgets: ";
     for (size_t i = 0; i < n; i++) {
         cout << decryptor.invariant_noise_budget(ct[i]);
@@ -566,7 +567,7 @@ int main() {
             << "BitonicBFV_NonBatched" << ","
             << n << ","
             << sort_ms << ","
-            << ct_ct_mult_count << ","
+            << sort_mult_count << ","
             << min_noise << "\n";
         csv.close();
         cout << "\nLogged run to benchmark_results.csv" << endl;
