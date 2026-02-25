@@ -13,7 +13,7 @@ sort_demo
 
 takeover.md
 benchmark_results.csv
-benchmark_results_2.csv
+benchmark_results_*.csv
 perf_results_2.csv
 
 __pycache__/

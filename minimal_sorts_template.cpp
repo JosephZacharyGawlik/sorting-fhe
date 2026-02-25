@@ -773,9 +773,21 @@ int main() {
     }
 
     /*********************
-     * BENCHMARK: Rank-based sort n=4
+     * BENCHMARK: Rank-based sort n=2,4,8,16
      *********************/
+    run_benchmark({42, 17},
+                  encryptor, evaluator, decryptor, relin_keys,
+                  SortAlgorithm::RankBased);
+
     run_benchmark({42, 17, 83, 5},
+                  encryptor, evaluator, decryptor, relin_keys,
+                  SortAlgorithm::RankBased);
+
+    run_benchmark({42, 17, 83, 5, 91, 33, 67, 12},
+                  encryptor, evaluator, decryptor, relin_keys,
+                  SortAlgorithm::RankBased);
+
+    run_benchmark({42, 17, 83, 5, 91, 33, 67, 12, 100, 2, 55, 28, 76, 9, 118, 44},
                   encryptor, evaluator, decryptor, relin_keys,
                   SortAlgorithm::RankBased);
 
