@@ -620,7 +620,7 @@ void run_benchmark(const vector<uint64_t> &input_values,
  *******************************************/
 int main() {
     cout << "========================================" << endl;
-    cout << "Non-Batched BFV Sort Benchmark" << endl;
+    cout << "Non-Batched BFV Sort Benchmark (Optimized Params)" << endl;
     cout << "========================================" << endl;
 
     /*********************
@@ -628,18 +628,16 @@ int main() {
      *********************/
     cout << "\n[1] Setting up BFV parameters..." << endl;
 
-    size_t poly_modulus_degree = 32768;
+    size_t poly_modulus_degree = 16384;
 
     EncryptionParameters parms(scheme_type::bfv);
     parms.set_poly_modulus_degree(poly_modulus_degree);
-    // Need ~2200 bits for n=16 (10 rounds x ~220 bits/round).
-    // 40 primes x 60 bits = 2400 bits.
-    // sec_level_type::none needed since this exceeds tc128 limits for N=32768.
+    // Rank-based sort: constant depth 18, ~430 bits noise consumed.
+    // 12 primes x 60 bits = 720 bits — gives ~290 bits headroom.
+    // N=16384 (half of bitonic's 32768) — each operation is ~4x faster.
     parms.set_coeff_modulus(CoeffModulus::Create(poly_modulus_degree,
         {60, 60, 60, 60, 60, 60, 60, 60, 60, 60,
-         60, 60, 60, 60, 60, 60, 60, 60, 60, 60,
-         60, 60, 60, 60, 60, 60, 60, 60, 60, 60,
-         60, 60, 60, 60, 60, 60, 60, 60, 60, 60}));
+         60, 60}));
     parms.set_plain_modulus(PLAIN_MOD);
 
     SEALContext context(parms, true, sec_level_type::none);
