@@ -29,3 +29,12 @@ endif()
 find_package(SEAL 4.1 REQUIRED)
 add_executable(bitonic_bfv minimal_sorts_template.cpp)
 target_link_libraries(bitonic_bfv SEAL::seal)
+
+# OpenMP parallelized targets
+find_package(OpenMP REQUIRED)
+
+add_executable(bitonic_parallel bitonic_sort.cpp)
+target_link_libraries(bitonic_parallel SEAL::seal OpenMP::OpenMP_CXX)
+
+add_executable(rank_parallel rank_sort.cpp)
+target_link_libraries(rank_parallel SEAL::seal OpenMP::OpenMP_CXX)
