@@ -21,3 +21,5 @@ screenshots/
 
 all_benchmark_results.csv
 BENCHMARK_RESULTS_README.md
+
+*.csv
