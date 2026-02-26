@@ -1,74 +1,69 @@
-# OpenFHE Installation & Environment Setup Log
-This document records the configuration of the OpenFHE development environment on a Google Cloud n2-standard-8 instance.
+# Sorting on Encrypted Data using BFV Homomorphic Encryption
 
-## 1. System Specifications
-**Machine Type:** n2-standard-8 (8 vCPUs, 32 GB RAM).
+Comparison of **bitonic sort** and **rank-based sort** on BFV-encrypted integers using Microsoft SEAL 4.1.2. Each ciphertext encrypts a single integer (scalar/non-batched encoding) in the range [0, 128] with plaintext modulus p = 257.
 
-**Processor Architecture:** x86_64 with AVX-512 vector instruction sets.
+## Algorithms
 
-**Operating System:** Ubuntu 22.04 LTS.
+### Bitonic Sort
+- Standard bitonic sorting network with oblivious compare-and-swap
+- Comparison via Paterson-Stockmeyer polynomial evaluation of the sign function over Z_257
+- Multiplicative depth grows with input size: O(log^2 n) rounds, each consuming ~220 bits of noise budget
+- Parameters: N=32768, 40 primes x 60 bits = 2400-bit coefficient modulus
 
-## 2. Prerequisites & Dependencies
-To support advanced math backends and version control, the following system packages were installed:
+### Rank-Based Sort
+- Computes each element's rank (number of smaller elements) via pairwise comparisons
+- Places elements at their ranked positions using Fermat's Little Theorem-based is_zero indicator
+- **Constant multiplicative depth of 18** regardless of input size
+- Only works with **distinct** input values (the flag polynomial is undefined for zero differences)
+- Optimized parameters: N=16384, 12 primes x 60 bits = 720-bit coefficient modulus (sufficient due to constant depth)
+- Also benchmarked with N=32768 (2400-bit) for fair per-operation cost comparison with bitonic
+
+### Parallelization (OpenMP)
+Both algorithms are parallelized with OpenMP:
+- **Rank sort**: Phase 1 (all n(n-1)/2 pairwise comparisons) and Phase 3 (all n position placements) are embarrassingly parallel
+- **Bitonic sort**: Within each round, independent compare-and-swap pairs run in parallel, but rounds are sequential
+
+Serial execution is achieved by setting `OMP_NUM_THREADS=1`.
+
+## Files
+
+| File | Description |
+|------|-------------|
+| `rank_sort.cpp` | Rank-based sort with N=16384, 720-bit coeff modulus |
+| `bitonic_sort.cpp` | Bitonic sort with N=32768, 2400-bit coeff modulus |
+| `rank_sort_32k.cpp` | Rank-based sort with N=32768, 2400-bit coeff modulus (for fair per-operation comparison with bitonic) |
+| `compute_sign_poly.py` | Generates Q(y) polynomial coefficients for sign function over Z_257 |
+| `CMakeLists.txt` | Build configuration |
+| `benchmark_results_consolidated.csv` | Consolidated benchmark results (56 rows) |
+
+## Building
+
+Requires Microsoft SEAL 4.1.2 installed at `$HOME/seal_install` (or adjust the cmake prefix path).
 
 ```bash
-
-sudo apt update
-sudo apt install -y git build-essential cmake autoconf libgmp-dev libntl-dev
-```
-
-**GMP/NTL**: High-performance libraries for multi-precision arithmetic, essential for FHE polynomial math.
-
-**Autoconf**: Required for building external dependencies within the OpenFHE ecosystem.
-
-## 3. OpenFHE Source Configuration
-We cloned the official development repository and configured the build specifically for the N2 hardware.
-
-### Clone
-```bash
-
-git clone https://github.com/openfheorg/openfhe-development.git
-cd openfhe-development
 mkdir build && cd build
+cmake .. -DCMAKE_PREFIX_PATH=$HOME/seal_install
+make -j8
 ```
-### Build Configuration (CMake)
-We used specific flags to optimize performance and include external math libraries:
+
+This produces three binaries: `rank_parallel`, `bitonic_parallel`, `rank_32k`.
+
+## Running
 
 ```bash
+# Serial (1 thread)
+OMP_NUM_THREADS=1 ./rank_parallel
+OMP_NUM_THREADS=1 ./bitonic_parallel
+OMP_NUM_THREADS=1 ./rank_32k
 
-cmake .. \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DWITH_NATIVEOPT=ON \
-  -DWITH_NTL=ON \
-  -DWITH_TCM=OFF
+# Parallel (e.g., 8 threads)
+OMP_NUM_THREADS=8 ./rank_parallel
+OMP_NUM_THREADS=8 ./bitonic_parallel
+OMP_NUM_THREADS=8 ./rank_32k
 ```
 
-**WITH_NATIVEOPT=ON:** Critical flag that triggers -march=native. This allows the compiler to use the AVX-512 instructions available on the N2 instance.
+Each binary benchmarks n=2, 4, 8, 16 elements and writes results to `benchmark_results.csv`.
 
-**WITH_NTL=ON:** Enables the Number Theory Library backend for faster Lattice-based operations.
+## Benchmark Results
 
-**WITH_TCM=OFF:** Explicitly disabled during setup to bypass a linking error regarding libtcmalloc_minimal.so, opting for the standard system allocator for stability.
-
-## 4. Compilation and Installation
-To maximize the 8-core CPU, we used parallel compilation:
-
-**1. Compile:** make -j8 (assigned 1 thread per vCPU).
-
-**2. System Install:** sudo make install (moved headers to /usr/local/include and libs to /usr/local/lib).
-
-**3. Linker Refresh:** sudo ldconfig (updated the runtime linker cache to recognize OpenFHE shared objects).
-
-## 5. Verification
-The installation was verified by checking the presence of the core headers:
-
-```bash
-
-ls /usr/local/include/openfhe/core/config_core.h
-```
-
-### Key Troubleshooting Notes
-**Git Missing:** The minimal cloud image required manual installation of git.
-
-**Permissions:** make install requires sudo because it writes to protected system directories (/usr/local).
-
-**Shared Library Errors:** If the system cannot find libOPENFHEcore.so, ensure sudo ldconfig has been run to refresh the library paths.
+All benchmarks were run on LRZ CoolMUC-4 compute nodes via SLURM batch jobs. Full results are in `benchmark_results_consolidated.csv`.
