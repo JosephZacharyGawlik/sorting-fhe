@@ -17,3 +17,7 @@ benchmark_results_*.csv
 perf_results_2.csv
 
 __pycache__/
+screenshots/
+
+all_benchmark_results.csv
+BENCHMARK_RESULTS_README.md

@@ -38,3 +38,6 @@ target_link_libraries(bitonic_parallel SEAL::seal OpenMP::OpenMP_CXX)
 
 add_executable(rank_parallel rank_sort.cpp)
 target_link_libraries(rank_parallel SEAL::seal OpenMP::OpenMP_CXX)
+
+add_executable(rank_32k rank_sort_32k.cpp)
+target_link_libraries(rank_32k SEAL::seal OpenMP::OpenMP_CXX)
