@@ -38,19 +38,25 @@ Serial execution is achieved by setting `OMP_NUM_THREADS=1`.
 
 ## Prerequisites
 
-**Microsoft SEAL 4.1.2:**
+Install Microsoft SEAL 4.1.2 from your home directory (outside of this repository):
 
 ```bash
+cd ~
 git clone --branch v4.1.2 https://github.com/microsoft/SEAL.git
 cd SEAL
 cmake -S . -B build -DCMAKE_INSTALL_PREFIX=$HOME/seal_install
 cmake --build build -j8
 cmake --install build
+cd ~
 ```
 
 ## Building
 
+Clone and build the project:
+
 ```bash
+git clone https://github.com/JosephZacharyGawlik/sorting-fhe.git
+cd sorting-fhe
 mkdir build && cd build
 cmake .. -DCMAKE_PREFIX_PATH=$HOME/seal_install
 make -j8
