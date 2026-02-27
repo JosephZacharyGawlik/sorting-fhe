@@ -36,9 +36,19 @@ Serial execution is achieved by setting `OMP_NUM_THREADS=1`.
 | `CMakeLists.txt` | Build configuration |
 | `benchmark_results_consolidated.csv` | Consolidated benchmark results (56 rows) |
 
-## Building
+## Prerequisites
 
-Requires Microsoft SEAL 4.1.2 installed at `$HOME/seal_install` (or adjust the cmake prefix path).
+**Microsoft SEAL 4.1.2:**
+
+```bash
+git clone --branch v4.1.2 https://github.com/microsoft/SEAL.git
+cd SEAL
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX=$HOME/seal_install
+cmake --build build -j8
+cmake --install build
+```
+
+## Building
 
 ```bash
 mkdir build && cd build
